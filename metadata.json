@@ -1,0 +1,6 @@
+{
+  "name": "Decision Tree Studio",
+  "description": "Infinite canvas to create, configure, visualize, format, and export hierarchical question trees with directional answer links.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
