@@ -1,6 +1,7 @@
 import React from 'react';
 import { TreeNode, TreeEdge, ViewTransform } from '../types/tree';
 import { MapPin, EyeOff } from 'lucide-react';
+import { getNodeRole } from '../utils/treeUtils';
 
 interface MinimapProps {
   nodes: TreeNode[];
@@ -116,7 +117,7 @@ export const Minimap: React.FC<MinimapProps> = ({
           const ny = (node.y - minY) * scale;
           const nw = (node.width || 220) * scale;
           const nh = (node.height || 110) * scale;
-          const isOutcome = node.type === 'outcome';
+          const isOutcome = getNodeRole(node.id, edges) === 'outcome';
 
           return (
             <div

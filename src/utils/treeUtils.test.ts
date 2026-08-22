@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { sampleTrees } from './sampleTrees';
-import { exportTreeText, validateAndParseImport } from './treeUtils';
-import { TreeData } from '../types/tree';
+import { exportTreeText, validateAndParseImport, getNodeRole, getTreeMetrics } from './treeUtils';
+import { TreeData, TreeNode, TreeEdge } from '../types/tree';
 
 function verifyGraphEquivalence(orig: TreeData, imported: TreeData, label: string) {
   // 1. Check Node count
@@ -191,5 +191,102 @@ describe('Export and Import Graph Equivalence', () => {
         verifyGraphEquivalence(specialTree, result.tree, `specialTree -> ${format}`);
       });
     }
+  });
+
+  describe('Dynamic Node Roles and Tree Metrics Calculation', () => {
+    it('should calculate correct metrics for empty tree', () => {
+      const metrics = getTreeMetrics([], []);
+      assert.deepStrictEqual(metrics, {
+        questionCount: 0,
+        outcomeCount: 0,
+        edgeCount: 0,
+        totalNodeCount: 0,
+      });
+    });
+
+    it('should classify isolated node as question (not outcome)', () => {
+      const node: TreeNode = { id: 'n1', question: 'Isolated Step', x: 0, y: 0 };
+      assert.strictEqual(getNodeRole('n1', []), 'isolated');
+      const metrics = getTreeMetrics([node], []);
+      assert.deepStrictEqual(metrics, {
+        questionCount: 1,
+        outcomeCount: 0,
+        edgeCount: 0,
+        totalNodeCount: 1,
+      });
+    });
+
+    it('should correctly classify sample trees metrics', () => {
+      // techSupport has 8 nodes (4 questions/branches/root, 4 terminal outcomes), 7 edges
+      const metrics = getTreeMetrics(sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.strictEqual(metrics.questionCount, 4);
+      assert.strictEqual(metrics.outcomeCount, 4);
+      assert.strictEqual(metrics.edgeCount, 7);
+      assert.strictEqual(metrics.totalNodeCount, 8);
+    });
+
+    it('should dynamically update terminal outcomes when nodes and branches are added', () => {
+      const nodes: TreeNode[] = [
+        { id: 'root', question: 'Root Question', x: 0, y: 0 },
+        { id: 'leaf1', question: 'Outcome 1', x: 100, y: 100 },
+      ];
+      const edges: TreeEdge[] = [
+        { id: 'e1', sourceNodeId: 'root', targetNodeId: 'leaf1', answer: 'Yes' },
+      ];
+
+      // 1 question (root), 1 outcome (leaf1)
+      let metrics = getTreeMetrics(nodes, edges);
+      assert.strictEqual(metrics.questionCount, 1);
+      assert.strictEqual(metrics.outcomeCount, 1);
+      assert.strictEqual(metrics.edgeCount, 1);
+
+      // Add another outcome
+      nodes.push({ id: 'leaf2', question: 'Outcome 2', x: 200, y: 100 });
+      edges.push({ id: 'e2', sourceNodeId: 'root', targetNodeId: 'leaf2', answer: 'No' });
+
+      metrics = getTreeMetrics(nodes, edges);
+      assert.strictEqual(metrics.questionCount, 1);
+      assert.strictEqual(metrics.outcomeCount, 2);
+      assert.strictEqual(metrics.edgeCount, 2);
+      assert.strictEqual(metrics.totalNodeCount, 3);
+
+      // Turn leaf1 into a branching decision by adding a child
+      nodes.push({ id: 'subLeaf', question: 'Deep Outcome', x: 100, y: 200 });
+      edges.push({ id: 'e3', sourceNodeId: 'leaf1', targetNodeId: 'subLeaf', answer: 'Further check' });
+
+      // Now: root (question), leaf1 (now branch question), leaf2 (outcome), subLeaf (outcome)
+      metrics = getTreeMetrics(nodes, edges);
+      assert.strictEqual(metrics.questionCount, 2);
+      assert.strictEqual(metrics.outcomeCount, 2);
+      assert.strictEqual(metrics.edgeCount, 3);
+      assert.strictEqual(metrics.totalNodeCount, 4);
+
+      // Delete the edge e3
+      const edgesAfterDelete = edges.filter(e => e.id !== 'e3');
+      metrics = getTreeMetrics(nodes, edgesAfterDelete);
+      // leaf1 is outcome again, leaf2 is outcome, subLeaf is isolated (question)
+      assert.strictEqual(metrics.outcomeCount, 2);
+      assert.strictEqual(metrics.questionCount, 2);
+      assert.strictEqual(metrics.edgeCount, 2);
+    });
+
+    it('should correctly classify multiple converging branches to same outcome', () => {
+      const nodes: TreeNode[] = [
+        { id: 'r1', question: 'Route A', x: 0, y: 0 },
+        { id: 'r2', question: 'Route B', x: 100, y: 0 },
+        { id: 'sharedOutcome', question: 'Common Solution', x: 50, y: 100 },
+      ];
+      const edges: TreeEdge[] = [
+        { id: 'e1', sourceNodeId: 'r1', targetNodeId: 'sharedOutcome', answer: 'To Solution' },
+        { id: 'e2', sourceNodeId: 'r2', targetNodeId: 'sharedOutcome', answer: 'Also To Solution' },
+      ];
+
+      assert.strictEqual(getNodeRole('sharedOutcome', edges), 'outcome');
+      const metrics = getTreeMetrics(nodes, edges);
+      assert.strictEqual(metrics.questionCount, 2);
+      assert.strictEqual(metrics.outcomeCount, 1);
+      assert.strictEqual(metrics.edgeCount, 2);
+      assert.strictEqual(metrics.totalNodeCount, 3);
+    });
   });
 });

@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   GitFork
 } from 'lucide-react';
+import { getTreeMetrics } from '../utils/treeUtils';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -48,8 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const questionCount = tree.nodes.filter(n => n.type !== 'outcome').length;
-  const outcomeCount = tree.nodes.filter(n => n.type === 'outcome').length;
+  const { questionCount, outcomeCount, edgeCount } = getTreeMetrics(tree.nodes, tree.edges);
 
   return (
     <aside 
@@ -211,7 +211,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <GitFork className="w-3 h-3 text-indigo-500" />
               <span>Answer Links</span>
             </span>
-            <span className="font-mono font-bold text-slate-800">{tree.edges.length}</span>
+            <span className="font-mono font-bold text-slate-800">{edgeCount}</span>
           </div>
 
           <div className="pt-2 border-t border-slate-100 flex gap-1.5">

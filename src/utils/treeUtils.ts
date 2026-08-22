@@ -25,6 +25,38 @@ export function getNodeRole(
 }
 
 /**
+ * Compute tree topology metrics dynamically based on nodes and edges graph
+ */
+export function getTreeMetrics(
+  nodes: TreeNode[],
+  edges: TreeEdge[]
+): {
+  questionCount: number;
+  outcomeCount: number;
+  edgeCount: number;
+  totalNodeCount: number;
+} {
+  let outcomeCount = 0;
+  let questionCount = 0;
+
+  for (const node of nodes) {
+    const role = getNodeRole(node.id, edges);
+    if (role === 'outcome') {
+      outcomeCount++;
+    } else {
+      questionCount++;
+    }
+  }
+
+  return {
+    questionCount,
+    outcomeCount,
+    edgeCount: edges.length,
+    totalNodeCount: nodes.length,
+  };
+}
+
+/**
  * Find root nodes (nodes without incoming edges or marked as isRoot)
  */
 export function findRootNodes(nodes: TreeNode[], edges: TreeEdge[]): TreeNode[] {

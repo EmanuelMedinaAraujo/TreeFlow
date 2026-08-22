@@ -48,7 +48,7 @@ export const TreeSimulatorModal: React.FC<TreeSimulatorModalProps> = ({
 
   const currentNode = tree.nodes.find(n => n.id === currentNodeId);
   const outgoingEdges = currentNode ? getChildEdges(currentNode.id, tree.edges) : [];
-  const isOutcome = currentNode?.type === 'outcome' || (outgoingEdges.length === 0 && currentNode !== undefined);
+  const isOutcome = outgoingEdges.length === 0 && currentNode !== undefined;
 
   const handleChooseAnswer = (edge: TreeEdge) => {
     const targetNode = tree.nodes.find(n => n.id === edge.targetNodeId);
@@ -66,7 +66,7 @@ export const TreeSimulatorModal: React.FC<TreeSimulatorModalProps> = ({
     if (onSelectNodeOnCanvas) onSelectNodeOnCanvas(targetNode.id);
 
     const nextOutgoing = getChildEdges(targetNode.id, tree.edges);
-    if (targetNode.type === 'outcome' || nextOutgoing.length === 0) {
+    if (nextOutgoing.length === 0) {
       try {
         confetti({
           particleCount: 70,
