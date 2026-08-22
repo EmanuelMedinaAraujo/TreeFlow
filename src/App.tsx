@@ -35,16 +35,24 @@ import { Sidebar } from './components/Sidebar';
 import { Check, Info, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 
 const STORAGE_KEY = 'decision_tree_canvas_data_v2';
+const LEGACY_STORAGE_KEYS = [
+  'decision_tree_canvas_data_v2',
+  'decision_tree_canvas_data_v1',
+  'decision_tree_canvas_data',
+  'decision_tree_data',
+];
 
 export default function App() {
   // Tree state
   const [tree, setTree] = useState<TreeData>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.nodes && Array.isArray(parsed.nodes)) {
-          return parsed;
+      for (const key of LEGACY_STORAGE_KEYS) {
+        const saved = localStorage.getItem(key);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.nodes && Array.isArray(parsed.nodes)) {
+            return parsed;
+          }
         }
       }
     } catch {

@@ -1,4 +1,5 @@
 import { TreeData, TreeNode, TreeEdge, SubtreeClipboard, ExportFormat, GrowthDirection } from '../types/tree';
+import { formatTreeLayout } from './treeLayout';
 
 export const EXPORT_SIGNATURE = 'DECISION_TREE_STUDIO_EXPORT_V1';
 export const EXPORT_SIGNATURE_HEADER = '### DECISION TREE STUDIO EXPORT V1 ###';
@@ -222,6 +223,16 @@ export function exportTreeText(tree: TreeData, format: ExportFormat): string {
 }
 
 /**
+ * Determine effective node role respecting explicit node.type or graph structure
+ */
+export function getEffectiveNodeRole(node: TreeNode, edges: TreeEdge[]): string {
+  if (node.type && node.type !== 'node') {
+    return node.type;
+  }
+  return getNodeRole(node.id, edges);
+}
+
+/**
  * Generate human-readable hierarchical outline
  */
 function generateOutlineText(tree: TreeData): string {
@@ -241,8 +252,8 @@ function generateOutlineText(tree: TreeData): string {
     const node = tree.nodes.find(n => n.id === nodeId);
     if (!node) return;
 
-    const role = getNodeRole(nodeId, tree.edges);
-    const roleTag = role === 'outcome' ? '[OUTCOME]' : role === 'root' ? '[ROOT]' : '[QUESTION]';
+    const role = getEffectiveNodeRole(node, tree.edges);
+    const roleTag = role === 'outcome' ? '[OUTCOME]' : role === 'decision' ? '[DECISION]' : role === 'root' ? '[ROOT]' : '[QUESTION]';
     const answerPrefix = answerFromParent ? `[Answer: "${answerFromParent}"] ──► ` : '';
     const currentLine = `${prefix}${isLastChild ? '└── ' : '├── '}${answerPrefix}${roleTag} ${node.question}`;
     lines.push(currentLine);
@@ -290,10 +301,10 @@ function generateMarkdownText(tree: TreeData): string {
     const node = tree.nodes.find(n => n.id === nodeId);
     if (!node) return;
 
-    const role = getNodeRole(nodeId, tree.edges);
+    const role = getEffectiveNodeRole(node, tree.edges);
     const indent = '  '.repeat(depth);
     const answerBadge = answerFromParent ? `**[Answer: ${answerFromParent}]** ` : '';
-    const typeBadge = role === 'outcome' ? '🎯 **Outcome:** ' : role === 'root' ? '🏁 **Start:** ' : '❓ **Question:** ';
+    const typeBadge = role === 'outcome' ? '🎯 **Outcome:** ' : role === 'decision' ? '⚖️ **Decision:** ' : role === 'root' ? '🏁 **Start:** ' : '❓ **Question:** ';
     lines.push(`${indent}- ${answerBadge}${typeBadge}${node.question}`);
 
     if (node.description) {
@@ -332,9 +343,11 @@ function generateMermaidText(tree: TreeData): string {
   tree.nodes.forEach(node => {
     const cleanText = (node.question || 'Node').replace(/["\n\r]/g, ' ');
     const safeId = node.id.replace(/[^a-zA-Z0-9_]/g, '_');
-    const role = getNodeRole(node.id, tree.edges);
+    const role = getEffectiveNodeRole(node, tree.edges);
     if (role === 'outcome') {
       lines.push(`  ${safeId}(["🎯 ${cleanText}"])`);
+    } else if (role === 'decision') {
+      lines.push(`  ${safeId}{"⚖️ ${cleanText}"}`);
     } else {
       lines.push(`  ${safeId}["❓ ${cleanText}"]`);
     }
@@ -369,7 +382,8 @@ function generateDecisionPathsText(tree: TreeData): string {
       const pathString = currentPath
         .map((step, i) => {
           if (i === 0) return `[Start: "${step.q}"]`;
-          return `──► (Answer: "${step.a}") ──► [${step.role === 'outcome' ? 'Outcome' : 'Step'}: "${step.q}"]`;
+          const roleLabel = step.role === 'outcome' ? 'Outcome' : step.role === 'decision' ? 'Decision' : 'Step';
+          return `──► (Answer: "${step.a}") ──► [${roleLabel}: "${step.q}"]`;
         })
         .join(' ');
       paths.push(pathString);
@@ -381,14 +395,14 @@ function generateDecisionPathsText(tree: TreeData): string {
       if (targetNode) {
         findPaths(edge.targetNodeId, [
           ...currentPath,
-          { q: targetNode.question, a: edge.answer, role: getNodeRole(targetNode.id, tree.edges) },
+          { q: targetNode.question, a: edge.answer, role: getEffectiveNodeRole(targetNode, tree.edges) },
         ]);
       }
     }
   }
 
   roots.forEach(root => {
-    findPaths(root.id, [{ q: root.question, role: getNodeRole(root.id, tree.edges) }]);
+    findPaths(root.id, [{ q: root.question, role: getEffectiveNodeRole(root, tree.edges) }]);
   });
 
   return [
@@ -408,7 +422,7 @@ function generateYamlText(tree: TreeData): string {
     const node = tree.nodes.find(n => n.id === nodeId);
     if (!node) return '';
 
-    const role = getNodeRole(nodeId, tree.edges);
+    const role = getEffectiveNodeRole(node, tree.edges);
     const indent = '  '.repeat(indentLevel);
     let output = `${indent}- question: "${(node.question || '').replace(/"/g, '\\"')}"\n`;
     output += `${indent}  role: "${role}"\n`;
@@ -520,7 +534,7 @@ export function calculateEdgePath(
 
 /**
  * Validate and parse an imported text or JSON file.
- * STRICT: Only accepts files exported by Decision Tree Studio!
+ * Supports: JSON, Outline, Markdown, YAML, Mermaid Flowcharts, and Decision Paths.
  */
 export function validateAndParseImport(
   fileContent: string
@@ -533,69 +547,20 @@ export function validateAndParseImport(
     };
   }
 
-  // 1. Try parsing as JSON (either raw JSON or studio JSON export)
+  // 1. JSON parsing
   if (content.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(content);
-      // Check if it's our schema
-      const isOurSchema =
-        Array.isArray(parsed.nodes) &&
-        (parsed.exportSignature === EXPORT_SIGNATURE ||
-          parsed.growthDirection !== undefined ||
-          Array.isArray(parsed.edges));
-
-      if (!isOurSchema) {
-        return {
-          success: false,
-          error:
-            'Import rejected: This JSON file does not conform to the Decision Tree Studio structure or was not exported by this application.',
-        };
-      }
-
-      const nodes: TreeNode[] = (parsed.nodes || []).map((n: any) => ({
-        id: n.id || generateId('node'),
-        question: n.question || 'Untitled Node',
-        description: n.description || '',
-        x: typeof n.x === 'number' ? n.x : 0,
-        y: typeof n.y === 'number' ? n.y : 0,
-        width: n.width || 220,
-        height: n.height || 110,
-        isRoot: Boolean(n.isRoot),
-        color: n.color || '#3b82f6',
-        isCollapsed: Boolean(n.isCollapsed),
-      }));
-
-      const edges: TreeEdge[] = (parsed.edges || []).map((e: any) => ({
-        id: e.id || generateId('edge'),
-        sourceNodeId: e.sourceNodeId,
-        targetNodeId: e.targetNodeId,
-        answer: e.answer || 'Next',
-        description: e.description || '',
-      }));
-
-      return {
-        success: true,
-        tree: {
-          id: parsed.id || `tree_${Date.now()}`,
-          name: parsed.name || 'Imported Decision Tree',
-          growthDirection: parsed.growthDirection || 'TB',
-          nodes,
-          edges,
-        },
-      };
-    } catch {
-      return {
-        success: false,
-        error: 'Invalid JSON syntax. Please provide a valid Decision Tree Studio JSON export.',
-      };
-    }
+    return parseJsonImport(content);
   }
 
-  // 2. Text Outline / Markdown / YAML parsing with signature verification
+  // 2. Signature verification for text formats
   const hasStudioSignature =
     content.includes(EXPORT_SIGNATURE_HEADER) ||
     content.includes('DECISION TREE STUDIO EXPORT') ||
-    content.includes(EXPORT_SIGNATURE);
+    content.includes(EXPORT_SIGNATURE) ||
+    content.includes('graph TD') ||
+    content.includes('graph TB') ||
+    content.includes('graph LR') ||
+    content.includes('graph RL');
 
   if (!hasStudioSignature) {
     return {
@@ -605,13 +570,97 @@ export function validateAndParseImport(
     };
   }
 
-  // Parse Text Outline format exported by Decision Tree Studio
+  // 3. Detect text format
+  if (content.includes('format:mermaid') || content.includes('graph TD') || content.includes('graph TB') || content.includes('graph LR') || content.includes('graph RL')) {
+    return parseMermaidImport(content);
+  }
+
+  if (content.includes('=== DECISION PATHS') || content.includes('Path #1:')) {
+    return parseDecisionPathsImport(content);
+  }
+
+  if (content.includes('trees:') || (content.includes('branches:') && content.includes('question:'))) {
+    return parseYamlImport(content);
+  }
+
+  if (content.includes('format:markdown') || content.includes('**Outcome:**') || content.includes('**Question:**') || content.includes('**Start:**')) {
+    return parseMarkdownImport(content);
+  }
+
+  // Default to Outline parser
+  return parseOutlineImport(content);
+}
+
+/**
+ * JSON Import Parser
+ */
+function parseJsonImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
+  try {
+    const parsed = JSON.parse(content);
+    const isOurSchema =
+      Array.isArray(parsed.nodes) &&
+      (parsed.exportSignature === EXPORT_SIGNATURE ||
+        parsed.growthDirection !== undefined ||
+        Array.isArray(parsed.edges));
+
+    if (!isOurSchema) {
+      return {
+        success: false,
+        error:
+          'Import rejected: This JSON file does not conform to the Decision Tree Studio structure or was not exported by this application.',
+      };
+    }
+
+    const nodes: TreeNode[] = (parsed.nodes || []).map((n: any) => ({
+      id: n.id || generateId('node'),
+      question: n.question || 'Untitled Node',
+      description: n.description !== undefined ? n.description : '',
+      x: typeof n.x === 'number' ? n.x : 0,
+      y: typeof n.y === 'number' ? n.y : 0,
+      width: typeof n.width === 'number' ? n.width : 220,
+      height: typeof n.height === 'number' ? n.height : 110,
+      isRoot: Boolean(n.isRoot),
+      type: n.type || (n.isRoot ? 'question' : 'node'),
+      color: n.color || '#3b82f6',
+      isCollapsed: Boolean(n.isCollapsed),
+    }));
+
+    const edges: TreeEdge[] = (parsed.edges || []).map((e: any) => ({
+      id: e.id || generateId('edge'),
+      sourceNodeId: e.sourceNodeId,
+      targetNodeId: e.targetNodeId,
+      answer: e.answer !== undefined ? e.answer : 'Next',
+      description: e.description !== undefined ? e.description : '',
+    }));
+
+    return {
+      success: true,
+      tree: {
+        id: parsed.id || `tree_${Date.now()}`,
+        name: parsed.name || 'Imported Decision Tree',
+        growthDirection: (['TB', 'LR', 'RL'].includes(parsed.growthDirection) ? parsed.growthDirection : 'TB') as GrowthDirection,
+        nodes,
+        edges,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Invalid JSON syntax: ${err.message || err}`,
+    };
+  }
+}
+
+/**
+ * Text Outline Import Parser
+ */
+function parseOutlineImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
   try {
     const lines = content.split('\n');
     let treeName = 'Imported Decision Tree';
     let growthDirection: GrowthDirection = 'TB';
 
-    // Parse header metadata if present
+    // Parse header metadata
     for (const line of lines) {
       const nameMatch = line.match(/Name:\s*"([^"]+)"/i) || line.match(/===\s*(.+?)\s*\(Growth:/i);
       if (nameMatch && nameMatch[1]) {
@@ -626,77 +675,239 @@ export function validateAndParseImport(
     const nodes: TreeNode[] = [];
     const edges: TreeEdge[] = [];
 
-    // Parse tree nodes and branches from outline / markdown
     interface StackItem {
       nodeId: string;
-      indent: number;
+      depth: number;
     }
     const stack: StackItem[] = [];
+    let lastCreatedNode: TreeNode | null = null;
 
-    let currentRoot: TreeNode | null = null;
-    let nodeCounter = 0;
-
-    for (const line of lines) {
-      if (line.startsWith('#') || line.startsWith('===') || line.startsWith('<!--') || line.startsWith('%%') || !line.trim()) {
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      if (
+        line.startsWith('#') ||
+        line.startsWith('===') ||
+        line.startsWith('<!--') ||
+        line.startsWith('%%') ||
+        !line.trim()
+      ) {
         continue;
       }
 
-      // Check for TREE #1 root declaration
+      // Root header line: TREE #1: ...
       const rootMatch = line.match(/^TREE\s*#\d+:\s*(.+)$/i);
       if (rootMatch) {
         const question = rootMatch[1].trim();
         const rootNode: TreeNode = {
           id: generateId('node'),
           question,
-          x: 100 + nodes.length * 300,
-          y: 100,
-          width: 220,
-          height: 110,
+          x: 0,
+          y: 0,
+          width: 270,
+          height: 130,
           isRoot: true,
+          type: 'question',
           color: '#3b82f6',
         };
         nodes.push(rootNode);
-        currentRoot = rootNode;
+        lastCreatedNode = rootNode;
         stack.length = 0;
-        stack.push({ nodeId: rootNode.id, indent: 0 });
+        stack.push({ nodeId: rootNode.id, depth: 0 });
         continue;
       }
 
-      // Check for hierarchical branch line (e.g. ├── [Answer: "Yes"] ──► [QUESTION] Text)
-      const branchMatch = line.match(/^(\s*)([├└]──\s*)?(?:\[Answer:\s*"([^"]+)"\]\s*──►\s*)?(?:\[(ROOT|QUESTION|OUTCOME)\]\s*)?(.+)$/);
-      if (branchMatch) {
-        const leadingWhitespace = branchMatch[1] || '';
-        const answer = branchMatch[3] || 'Next';
-        const question = (branchMatch[5] || '').trim();
-
-        if (question.startsWith('ℹ') || question.startsWith('Description:')) {
-          // Description subtext for previous node
-          if (nodes.length > 0) {
-            const desc = question.replace(/^(ℹ|Description:)\s*/, '');
-            nodes[nodes.length - 1].description = desc;
-          }
-          continue;
+      // Description line
+      const descMatch = line.match(/^([\s│]*)(?:ℹ|Description:)\s*(.+)$/);
+      if (descMatch) {
+        const descText = descMatch[2].trim();
+        if (lastCreatedNode) {
+          lastCreatedNode.description = descText;
         }
+        continue;
+      }
 
-        const indent = leadingWhitespace.length;
+      // Branch line: e.g. "  │   ├── [Answer: \"Yes\"] ──► [QUESTION] Question text"
+      const branchMatch = line.match(
+        /^([\s│]*)(?:[├└]──\s*)?(?:\[Answer:\s*"(.*?)"\]\s*──►\s*)?(?:\[(ROOT|QUESTION|OUTCOME|DECISION)\]\s*)?(.+)$/
+      );
+
+      if (branchMatch) {
+        const prefix = branchMatch[1] || '';
+        const answer = branchMatch[2] || 'Next';
+        const roleTag = branchMatch[3] || 'QUESTION';
+        const question = (branchMatch[4] || '').trim();
+
+        if (!question) continue;
+
+        // Depth is determined by prefix length
+        const depth = prefix.length;
+
+        const role = roleTag.toLowerCase();
+        const nodeType = role === 'outcome' ? 'outcome' : role === 'decision' ? 'decision' : 'question';
+        const nodeColor = role === 'outcome' ? '#10b981' : role === 'decision' ? '#f59e0b' : '#3b82f6';
+
         const newNode: TreeNode = {
           id: generateId('node'),
           question,
-          x: 100 + (indent / 2) * 260,
-          y: 100 + nodeCounter * 80,
-          width: 220,
-          height: 110,
-          color: '#3b82f6',
+          x: 0,
+          y: 0,
+          width: nodeType === 'outcome' ? 260 : 270,
+          height: nodeType === 'outcome' ? 120 : 130,
+          type: nodeType,
+          color: nodeColor,
+          isRoot: nodes.length === 0,
         };
         nodes.push(newNode);
-        nodeCounter++;
+        lastCreatedNode = newNode;
 
-        // Find parent on stack with smaller indent
+        // Pop stack to find parent
+        while (stack.length > 0 && stack[stack.length - 1].depth >= depth) {
+          stack.pop();
+        }
+
+        const parent = stack.length > 0 ? stack[stack.length - 1] : null;
+        if (parent) {
+          edges.push({
+            id: generateId('edge'),
+            sourceNodeId: parent.nodeId,
+            targetNodeId: newNode.id,
+            answer,
+          });
+        }
+
+        stack.push({ nodeId: newNode.id, depth });
+      }
+    }
+
+    if (nodes.length === 0) {
+      return {
+        success: false,
+        error: 'No valid decision tree structure found inside the exported outline file.',
+      };
+    }
+
+    // Auto-layout nodes cleanly
+    const layoutNodes = formatTreeLayout(nodes, edges, growthDirection);
+
+    return {
+      success: true,
+      tree: {
+        id: `tree_${Date.now()}`,
+        name: treeName,
+        growthDirection,
+        nodes: layoutNodes,
+        edges,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse outline file: ${err.message || err}`,
+    };
+  }
+}
+
+/**
+ * Markdown Import Parser
+ */
+function parseMarkdownImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
+  try {
+    const lines = content.split('\n');
+    let treeName = 'Imported Decision Tree';
+    let growthDirection: GrowthDirection = 'TB';
+
+    // Parse header comment
+    for (const line of lines) {
+      const dirMatch = line.match(/direction:(TB|LR|RL)/i);
+      if (dirMatch && dirMatch[1]) {
+        growthDirection = dirMatch[1] as GrowthDirection;
+      }
+      const titleMatch = line.match(/^#\s+(.+)$/);
+      if (titleMatch && titleMatch[1]) {
+        treeName = titleMatch[1].trim();
+      }
+    }
+
+    const nodes: TreeNode[] = [];
+    const edges: TreeEdge[] = [];
+
+    interface StackItem {
+      nodeId: string;
+      indent: number;
+    }
+    const stack: StackItem[] = [];
+    let lastCreatedNode: TreeNode | null = null;
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      if (line.startsWith('<!--') || line.startsWith('#') || !line.trim()) {
+        continue;
+      }
+
+      // Blockquote description
+      const quoteMatch = line.match(/^\s*>\s*(.+)$/);
+      if (quoteMatch) {
+        if (lastCreatedNode) {
+          lastCreatedNode.description = quoteMatch[1].trim();
+        }
+        continue;
+      }
+
+      // Markdown list item: e.g. "  - **[Answer: Yes]** ❓ **Question:** Is there output?"
+      const listMatch = line.match(/^(\s*)[-*+]\s+(.+)$/);
+      if (listMatch) {
+        const indent = listMatch[1].length;
+        let lineText = listMatch[2].trim();
+
+        // Extract answer
+        let answer = 'Next';
+        const answerMatch = lineText.match(/^(?:\*\*\[Answer:\s*(.+?)\]\*\*|\[Answer:\s*(.+?)\]|\(Answer:\s*(.+?)\))\s*(.*)$/i);
+        if (answerMatch) {
+          answer = answerMatch[1] || answerMatch[2] || answerMatch[3];
+          lineText = (answerMatch[4] || '').trim();
+        }
+
+        // Extract role badge
+        let nodeType: TreeNode['type'] = 'question';
+        let nodeColor = '#3b82f6';
+        let isRoot = false;
+
+        const roleMatch = lineText.match(/^(🎯\s*\*\*Outcome:\*\*|🏁\s*\*\*Start:\*\*|❓\s*\*\*Question:\*\*|⚖️\s*\*\*Decision:\*\*|\[(?:ROOT|QUESTION|OUTCOME|DECISION)\])\s*(.*)$/i);
+        if (roleMatch) {
+          const badge = (roleMatch[1] || '').toLowerCase();
+          if (badge.includes('outcome')) {
+            nodeType = 'outcome';
+            nodeColor = '#10b981';
+          } else if (badge.includes('start') || badge.includes('[root]')) {
+            nodeType = 'question';
+            isRoot = true;
+          } else if (badge.includes('decision')) {
+            nodeType = 'decision';
+            nodeColor = '#f59e0b';
+          }
+          lineText = (roleMatch[2] || '').trim();
+        }
+
+        const question = lineText || 'Untitled Node';
+        const newNode: TreeNode = {
+          id: generateId('node'),
+          question,
+          x: 0,
+          y: 0,
+          width: nodeType === 'outcome' ? 260 : 270,
+          height: nodeType === 'outcome' ? 120 : 130,
+          type: nodeType,
+          color: nodeColor,
+          isRoot: isRoot || nodes.length === 0,
+        };
+        nodes.push(newNode);
+        lastCreatedNode = newNode;
+
         while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
           stack.pop();
         }
 
-        const parent = stack.length > 0 ? stack[stack.length - 1] : (currentRoot ? { nodeId: currentRoot.id, indent: -1 } : null);
+        const parent = stack.length > 0 ? stack[stack.length - 1] : null;
         if (parent) {
           edges.push({
             id: generateId('edge'),
@@ -713,9 +924,11 @@ export function validateAndParseImport(
     if (nodes.length === 0) {
       return {
         success: false,
-        error: 'No valid decision tree structure found inside the exported file.',
+        error: 'No valid decision tree structure found in markdown file.',
       };
     }
+
+    const layoutNodes = formatTreeLayout(nodes, edges, growthDirection);
 
     return {
       success: true,
@@ -723,15 +936,388 @@ export function validateAndParseImport(
         id: `tree_${Date.now()}`,
         name: treeName,
         growthDirection,
-        nodes,
+        nodes: layoutNodes,
         edges,
       },
     };
   } catch (err: any) {
     return {
       success: false,
-      error: `Failed to parse Decision Tree Studio file: ${err.message || err}`,
+      error: `Failed to parse markdown file: ${err.message || err}`,
     };
   }
 }
+
+/**
+ * YAML Import Parser
+ */
+function parseYamlImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
+  try {
+    const lines = content.split('\n');
+    let treeName = 'Imported Decision Tree';
+    let growthDirection: GrowthDirection = 'TB';
+
+    for (const line of lines) {
+      const nameMatch = line.match(/^name:\s*"([^"]+)"/i);
+      if (nameMatch) treeName = nameMatch[1];
+      const dirMatch = line.match(/^growthDirection:\s*"([^"]+)"/i);
+      if (dirMatch && ['TB', 'LR', 'RL'].includes(dirMatch[1])) {
+        growthDirection = dirMatch[1] as GrowthDirection;
+      }
+    }
+
+    const nodes: TreeNode[] = [];
+    const edges: TreeEdge[] = [];
+
+    // Parse indentation structure
+    interface YamlFrame {
+      nodeId: string;
+      indent: number;
+      pendingAnswer?: string;
+    }
+    const stack: YamlFrame[] = [];
+    let lastCreatedNode: TreeNode | null = null;
+    let pendingAnswer: string | null = null;
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      if (line.startsWith('#') || !line.trim()) continue;
+
+      const indent = (line.match(/^(\s*)/)?.[1] || '').length;
+      const trimmed = line.trim();
+
+      // Question line: "- question: \"...\"" or "question: \"...\""
+      const questionMatch = trimmed.match(/^(?:-\s*)?question:\s*"(.*)"\s*$/);
+      if (questionMatch) {
+        const question = questionMatch[1].replace(/\\"/g, '"');
+        const isRoot = stack.length === 0;
+
+        const newNode: TreeNode = {
+          id: generateId('node'),
+          question,
+          x: 0,
+          y: 0,
+          width: 270,
+          height: 130,
+          type: 'question',
+          color: '#3b82f6',
+          isRoot,
+        };
+        nodes.push(newNode);
+        lastCreatedNode = newNode;
+
+        // Pop stack to match indent
+        while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+          stack.pop();
+        }
+
+        const parent = stack.length > 0 ? stack[stack.length - 1] : null;
+        if (parent && pendingAnswer) {
+          edges.push({
+            id: generateId('edge'),
+            sourceNodeId: parent.nodeId,
+            targetNodeId: newNode.id,
+            answer: pendingAnswer,
+          });
+          pendingAnswer = null;
+        }
+
+        stack.push({ nodeId: newNode.id, indent });
+        continue;
+      }
+
+      // Role line
+      const roleMatch = trimmed.match(/^role:\s*"([^"]*)"/);
+      if (roleMatch && lastCreatedNode) {
+        const role = roleMatch[1].toLowerCase();
+        if (role === 'outcome') {
+          lastCreatedNode.type = 'outcome';
+          lastCreatedNode.color = '#10b981';
+          lastCreatedNode.width = 260;
+          lastCreatedNode.height = 120;
+        } else if (role === 'decision') {
+          lastCreatedNode.type = 'decision';
+          lastCreatedNode.color = '#f59e0b';
+        }
+        continue;
+      }
+
+      // Description line
+      const descMatch = trimmed.match(/^description:\s*"(.*)"\s*$/);
+      if (descMatch && lastCreatedNode) {
+        lastCreatedNode.description = descMatch[1].replace(/\\"/g, '"');
+        continue;
+      }
+
+      // Branch answer line: "- answer: \"...\""
+      const answerMatch = trimmed.match(/^(?:-\s*)?answer:\s*"(.*)"\s*$/);
+      if (answerMatch) {
+        pendingAnswer = answerMatch[1].replace(/\\"/g, '"');
+        // While stack indent is deeper than this branch level, pop
+        while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+          stack.pop();
+        }
+        continue;
+      }
+    }
+
+    if (nodes.length === 0) {
+      return {
+        success: false,
+        error: 'No valid decision tree nodes found in YAML file.',
+      };
+    }
+
+    const layoutNodes = formatTreeLayout(nodes, edges, growthDirection);
+
+    return {
+      success: true,
+      tree: {
+        id: `tree_${Date.now()}`,
+        name: treeName,
+        growthDirection,
+        nodes: layoutNodes,
+        edges,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse YAML file: ${err.message || err}`,
+    };
+  }
+}
+
+/**
+ * Mermaid Import Parser
+ */
+function parseMermaidImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
+  try {
+    const lines = content.split('\n');
+    let treeName = 'Imported Mermaid Flowchart';
+    let growthDirection: GrowthDirection = 'TB';
+
+    for (const line of lines) {
+      const dirMatch = line.match(/^graph\s+(TD|TB|LR|RL)/i);
+      if (dirMatch) {
+        const d = dirMatch[1].toUpperCase();
+        growthDirection = (d === 'TD' || d === 'TB' ? 'TB' : d === 'LR' ? 'LR' : 'RL') as GrowthDirection;
+      }
+    }
+
+    const nodeMap = new Map<string, TreeNode>();
+    const edges: TreeEdge[] = [];
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (line.startsWith('%%') || line.startsWith('graph') || !line) continue;
+
+      // Node definition: node_id["..."], node_id(["..."]), node_id{"..."}
+      const nodeMatch = line.match(/^([a-zA-Z0-9_]+)\s*(?:\(\["([^"]+)"\]\)|\("([^"]+)"\)|\["([^"]+)"\]|\[([^\]]+)\]|\{"([^"]+)"\}|\{([^}]+)\})/);
+      if (nodeMatch) {
+        const id = nodeMatch[1];
+        let text = (nodeMatch[2] || nodeMatch[3] || nodeMatch[4] || nodeMatch[5] || nodeMatch[6] || nodeMatch[7] || '').trim();
+        let nodeType: TreeNode['type'] = 'question';
+        let nodeColor = '#3b82f6';
+
+        if (text.startsWith('🎯') || line.includes('(["')) {
+          nodeType = 'outcome';
+          nodeColor = '#10b981';
+        } else if (text.startsWith('⚖️') || line.includes('{"') || line.includes('{')) {
+          nodeType = 'decision';
+          nodeColor = '#f59e0b';
+        }
+        text = text.replace(/^(?:🎯|❓|🏁|⚖️)\s*/, '').trim();
+
+        if (!nodeMap.has(id)) {
+          nodeMap.set(id, {
+            id,
+            question: text || 'Untitled Node',
+            x: 0,
+            y: 0,
+            width: nodeType === 'outcome' ? 260 : 270,
+            height: nodeType === 'outcome' ? 120 : 130,
+            type: nodeType,
+            color: nodeColor,
+            isRoot: false,
+          });
+        }
+      }
+
+      // Edge connection: source -->|"Answer"| target
+      const edgeMatch = line.match(/^([a-zA-Z0-9_]+)\s*-->\s*(?:\|"([^"]+)"\|\s*|\|([^|]+)\|\s*)?([a-zA-Z0-9_]+)/);
+      if (edgeMatch) {
+        const sourceId = edgeMatch[1];
+        const answer = (edgeMatch[2] || edgeMatch[3] || 'Next').trim();
+        const targetId = edgeMatch[4];
+
+        // Ensure nodes exist
+        if (!nodeMap.has(sourceId)) {
+          nodeMap.set(sourceId, {
+            id: sourceId,
+            question: sourceId,
+            x: 0,
+            y: 0,
+            width: 270,
+            height: 130,
+            type: 'question',
+            color: '#3b82f6',
+          });
+        }
+        if (!nodeMap.has(targetId)) {
+          nodeMap.set(targetId, {
+            id: targetId,
+            question: targetId,
+            x: 0,
+            y: 0,
+            width: 270,
+            height: 130,
+            type: 'question',
+            color: '#3b82f6',
+          });
+        }
+
+        edges.push({
+          id: generateId('edge'),
+          sourceNodeId: sourceId,
+          targetNodeId: targetId,
+          answer,
+        });
+      }
+    }
+
+    const nodes = Array.from(nodeMap.values());
+    if (nodes.length === 0) {
+      return {
+        success: false,
+        error: 'No valid flowchart nodes found in Mermaid file.',
+      };
+    }
+
+    // Mark roots
+    const targetIds = new Set(edges.map(e => e.targetNodeId));
+    nodes.forEach(n => {
+      if (!targetIds.has(n.id)) n.isRoot = true;
+    });
+
+    const layoutNodes = formatTreeLayout(nodes, edges, growthDirection);
+
+    return {
+      success: true,
+      tree: {
+        id: `tree_${Date.now()}`,
+        name: treeName,
+        growthDirection,
+        nodes: layoutNodes,
+        edges,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse Mermaid diagram: ${err.message || err}`,
+    };
+  }
+}
+
+/**
+ * Decision Paths Import Parser
+ */
+function parseDecisionPathsImport(content: string): { success: boolean; tree?: TreeData; error?: string } {
+  try {
+    const lines = content.split('\n');
+    const nodes: TreeNode[] = [];
+    const edges: TreeEdge[] = [];
+    const nodeTextToId = new Map<string, string>();
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith('===') || line.startsWith('Path #')) {
+        continue;
+      }
+
+      // Split path steps by arrow
+      const segments = line.split('──►').map(s => s.trim()).filter(Boolean);
+      let previousNodeId: string | null = null;
+      let pendingAnswer = 'Next';
+
+      for (const seg of segments) {
+        // Check for (Answer: "...")
+        const answerMatch = seg.match(/^\(Answer:\s*"(.*)"\)$/);
+        if (answerMatch) {
+          pendingAnswer = answerMatch[1].replace(/\\"/g, '"');
+          continue;
+        }
+
+        // Check for [Role: "Question"]
+        const nodeMatch = seg.match(/^\[(Start|Step|Outcome|Question|Decision):\s*"(.*)"\]$/);
+        if (nodeMatch) {
+          const role = nodeMatch[1].toLowerCase();
+          const question = nodeMatch[2].replace(/\\"/g, '"');
+
+          let nodeId = nodeTextToId.get(question);
+          if (!nodeId) {
+            nodeId = generateId('node');
+            nodeTextToId.set(question, nodeId);
+            const isOutcome = role === 'outcome';
+            nodes.push({
+              id: nodeId,
+              question,
+              x: 0,
+              y: 0,
+              width: isOutcome ? 260 : 270,
+              height: isOutcome ? 120 : 130,
+              type: isOutcome ? 'outcome' : role === 'decision' ? 'decision' : 'question',
+              color: isOutcome ? '#10b981' : role === 'decision' ? '#f59e0b' : '#3b82f6',
+              isRoot: role === 'start' || nodes.length === 0,
+            });
+          }
+
+          if (previousNodeId && previousNodeId !== nodeId) {
+            const edgeExists = edges.some(
+              e => e.sourceNodeId === previousNodeId && e.targetNodeId === nodeId && e.answer === pendingAnswer
+            );
+            if (!edgeExists) {
+              edges.push({
+                id: generateId('edge'),
+                sourceNodeId: previousNodeId,
+                targetNodeId: nodeId,
+                answer: pendingAnswer,
+              });
+            }
+          }
+
+          previousNodeId = nodeId;
+          pendingAnswer = 'Next';
+        }
+      }
+    }
+
+    if (nodes.length === 0) {
+      return {
+        success: false,
+        error: 'No valid decision pathways found in file.',
+      };
+    }
+
+    const layoutNodes = formatTreeLayout(nodes, edges, 'TB');
+
+    return {
+      success: true,
+      tree: {
+        id: `tree_${Date.now()}`,
+        name: 'Imported Decision Paths',
+        growthDirection: 'TB',
+        nodes: layoutNodes,
+        edges,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse decision paths: ${err.message || err}`,
+    };
+  }
+}
+
 
