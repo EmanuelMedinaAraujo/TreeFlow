@@ -1,7 +1,24 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { sampleTrees } from './sampleTrees';
-import { exportTreeText, validateAndParseImport, getNodeRole, getTreeMetrics } from './treeUtils';
+import { 
+  exportTreeText, 
+  validateAndParseImport, 
+  getNodeRole, 
+  getTreeMetrics,
+  findRootNodes,
+  getChildEdges,
+  getParentEdges,
+  getDescendantNodeIds,
+  wouldCreateCycle,
+  getHiddenNodeIds,
+  extractSubtree,
+  extractSelectedNodes,
+  instantiateSubtree,
+  calculateEdgePath,
+  generateId
+} from './treeUtils';
+import { formatTreeLayout } from './treeLayout';
 import { TreeData, TreeNode, TreeEdge } from '../types/tree';
 
 function verifyGraphEquivalence(orig: TreeData, imported: TreeData, label: string) {
@@ -182,7 +199,7 @@ describe('Export and Import Graph Equivalence', () => {
       ],
     };
 
-    for (const format of ['json', 'outline', 'markdown', 'yaml', 'paths'] as const) {
+    for (const format of formats) {
       it(`should handle special characters and quotes in ${format}`, () => {
         const exported = exportTreeText(specialTree, format);
         const result = validateAndParseImport(exported);
@@ -289,4 +306,299 @@ describe('Export and Import Graph Equivalence', () => {
       assert.strictEqual(metrics.totalNodeCount, 3);
     });
   });
+
+  describe('Isolated and Multi-Isolated Nodes Export/Import', () => {
+    const singleIsolatedTree: TreeData = {
+      id: 'single_isolated',
+      name: 'Single Standalone Node Tree',
+      growthDirection: 'TB',
+      nodes: [
+        { id: 'iso_root', question: 'Initial Standalone Discovery', description: 'No incoming or outgoing edges', x: 0, y: 0, isRoot: true, type: 'question' },
+      ],
+      edges: [],
+    };
+
+    for (const format of formats) {
+      it(`should preserve single standalone node across ${format}`, () => {
+        const exported = exportTreeText(singleIsolatedTree, format);
+        const result = validateAndParseImport(exported);
+        assert.strictEqual(result.success, true, `Failed to parse ${format}: ${result.error}`);
+        assert.ok(result.tree);
+        verifyGraphEquivalence(singleIsolatedTree, result.tree, `singleIsolated -> ${format}`);
+      });
+    }
+
+    const multiIsolatedTree: TreeData = {
+      id: 'multi_isolated',
+      name: 'Multiple Disconnected Nodes Workspace',
+      growthDirection: 'LR',
+      nodes: [
+        { id: 'iso_1', question: 'Component 1 Setup', description: 'Standalone 1', x: 0, y: 0, isRoot: true, type: 'question' },
+        { id: 'iso_2', question: 'Component 2 Setup', description: 'Standalone 2', x: 0, y: 150, isRoot: true, type: 'question' },
+        { id: 'iso_3', question: 'Component 3 Setup', description: 'Standalone 3', x: 0, y: 300, isRoot: true, type: 'decision' },
+      ],
+      edges: [],
+    };
+
+    for (const format of formats) {
+      it(`should preserve multiple standalone nodes across ${format}`, () => {
+        const exported = exportTreeText(multiIsolatedTree, format);
+        const result = validateAndParseImport(exported);
+        assert.strictEqual(result.success, true, `Failed to parse ${format}: ${result.error}`);
+        assert.ok(result.tree);
+        verifyGraphEquivalence(multiIsolatedTree, result.tree, `multiIsolated -> ${format}`);
+      });
+    }
+  });
+
+  describe('Internationalization & Complex Unicode Handling', () => {
+    const i18nTree: TreeData = {
+      id: 'i18n_test_tree',
+      name: 'International 多语言 Диагностика & Emoji 🌟 Tree',
+      growthDirection: 'RL',
+      nodes: [
+        { id: 'i18n_root', question: '¿Está encendido el dispositivo? 💻 (電源は入っていますか？)', description: 'Überprüfen Sie die Stromversorgung und LEDs ⚡️', x: 0, y: 0, isRoot: true, type: 'question' },
+        { id: 'i18n_branch1', question: 'Vérifier la connexion réseau (5G / Wi-Fi 6) 🌐', description: 'Prüfung der Netzwerkverbindung und Signalstärke', x: 0, y: 0, type: 'decision' },
+        { id: 'i18n_outcome1', question: 'Système opérationnel! 🚀 Все системы работают нормально.', description: 'Final OK: (100% ≥ 99.9% & α < β)', x: 0, y: 0, type: 'outcome' },
+      ],
+      edges: [
+        { id: 'i18n_e1', sourceNodeId: 'i18n_root', targetNodeId: 'i18n_branch1', answer: 'Oui / はい (Signal > -70 dBm)' },
+        { id: 'i18n_e2', sourceNodeId: 'i18n_branch1', targetNodeId: 'i18n_outcome1', answer: 'OK / 成功 (Latency < 20ms)' },
+      ],
+    };
+
+    for (const format of formats) {
+      it(`should preserve complex international unicode strings across ${format}`, () => {
+        const exported = exportTreeText(i18nTree, format);
+        const result = validateAndParseImport(exported);
+        assert.strictEqual(result.success, true, `Failed to parse ${format}: ${result.error}`);
+        assert.ok(result.tree);
+        verifyGraphEquivalence(i18nTree, result.tree, `i18nTree -> ${format}`);
+      });
+    }
+  });
+
+  describe('Security and Import File Validation', () => {
+    it('should reject empty file content', () => {
+      const result = validateAndParseImport('');
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('empty'));
+    });
+
+    it('should reject whitespace-only file content', () => {
+      const result = validateAndParseImport('   \n\t  \r\n  ');
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('empty'));
+    });
+
+    it('should reject foreign text files lacking studio signature', () => {
+      const foreignText = 'This is an arbitrary text file downloaded from internet without studio signature.';
+      const result = validateAndParseImport(foreignText);
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('signature') || result.error?.includes('rejected'));
+    });
+
+    it('should reject invalid JSON syntax gracefully', () => {
+      const invalidJson = '{\n  "nodes": [\n    { "id": "n1", "question": "Unclosed...\n';
+      const result = validateAndParseImport(invalidJson);
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('Invalid JSON') || result.error?.includes('syntax'));
+    });
+
+    it('should reject non-conforming JSON objects', () => {
+      const randomJson = JSON.stringify({ user: 'alice', age: 30 });
+      const result = validateAndParseImport(randomJson);
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('rejected') || result.error?.includes('conform'));
+    });
+  });
+
+  describe('Subtree Clipboard, Copy & Paste Operations', () => {
+    it('should extract subtree including all descendants', () => {
+      const subtree = extractSubtree('node_root', sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.ok(subtree);
+      assert.strictEqual(subtree.rootId, 'node_root');
+      assert.strictEqual(subtree.nodes.length, sampleTrees.techSupport.nodes.length);
+      assert.strictEqual(subtree.edges.length, sampleTrees.techSupport.edges.length);
+    });
+
+    it('should extract partial subtree from an intermediate branch node', () => {
+      // node_screen_check has 4 descendants (boot_loop, monitor_cables, happy_login, safe_mode) -> 5 nodes total
+      const subtree = extractSubtree('node_screen_check', sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.ok(subtree);
+      assert.strictEqual(subtree.rootId, 'node_screen_check');
+      assert.strictEqual(subtree.nodes.length, 5);
+      assert.strictEqual(subtree.edges.length, 4);
+    });
+
+    it('should extract multi-selected nodes and only edges between them', () => {
+      const selectedIds = ['node_root', 'node_screen_check', 'node_boot_loop'];
+      const subtree = extractSelectedNodes(selectedIds, sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.ok(subtree);
+      assert.strictEqual(subtree.nodes.length, 3);
+      // edges between root->screen_check (edge_1) and screen_check->boot_loop (edge_3) -> 2 edges
+      assert.strictEqual(subtree.edges.length, 2);
+    });
+
+    it('should instantiate copied subtree with new unique IDs and offset coordinates', () => {
+      const subtree = extractSubtree('node_screen_check', sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.ok(subtree);
+
+      const targetPos = { x: 500, y: 700 };
+      const { newNodes, newEdges, newRootId } = instantiateSubtree(subtree, targetPos);
+
+      assert.strictEqual(newNodes.length, subtree.nodes.length);
+      assert.strictEqual(newEdges.length, subtree.edges.length);
+
+      // Verify all IDs are completely new and distinct
+      const origNodeIds = new Set(subtree.nodes.map(n => n.id));
+      for (const n of newNodes) {
+        assert.ok(!origNodeIds.has(n.id), `Instantiated node ID "${n.id}" must not collide with original`);
+      }
+      for (const e of newEdges) {
+        assert.ok(newNodes.some(n => n.id === e.sourceNodeId));
+        assert.ok(newNodes.some(n => n.id === e.targetNodeId));
+      }
+
+      // Verify coordinates are translated relative to targetPos
+      const minNewX = Math.min(...newNodes.map(n => n.x));
+      const minNewY = Math.min(...newNodes.map(n => n.y));
+      assert.strictEqual(minNewX, targetPos.x);
+      assert.strictEqual(minNewY, targetPos.y);
+    });
+  });
+
+  describe('Cycle Detection Algorithm (wouldCreateCycle)', () => {
+    const edges: TreeEdge[] = [
+      { id: 'e1', sourceNodeId: 'A', targetNodeId: 'B', answer: 'to B' },
+      { id: 'e2', sourceNodeId: 'B', targetNodeId: 'C', answer: 'to C' },
+      { id: 'e3', sourceNodeId: 'C', targetNodeId: 'D', answer: 'to D' },
+    ];
+
+    it('should prevent connecting a node to itself', () => {
+      assert.strictEqual(wouldCreateCycle('A', 'A', edges), true);
+      assert.strictEqual(wouldCreateCycle('B', 'B', edges), true);
+    });
+
+    it('should prevent connecting descendant back to ancestor (creating loop)', () => {
+      assert.strictEqual(wouldCreateCycle('D', 'A', edges), true);
+      assert.strictEqual(wouldCreateCycle('C', 'A', edges), true);
+      assert.strictEqual(wouldCreateCycle('D', 'B', edges), true);
+      assert.strictEqual(wouldCreateCycle('C', 'B', edges), true);
+    });
+
+    it('should allow valid forward branching without cycles', () => {
+      assert.strictEqual(wouldCreateCycle('A', 'D', edges), false);
+      assert.strictEqual(wouldCreateCycle('B', 'D', edges), false);
+      assert.strictEqual(wouldCreateCycle('D', 'E', edges), false);
+    });
+  });
+
+  describe('Tree Layout Formatting (formatTreeLayout)', () => {
+    it('should format TB (Top-to-Bottom) hierarchy correctly without overlapping coordinates', () => {
+      const formatted = formatTreeLayout(
+        sampleTrees.techSupport.nodes,
+        sampleTrees.techSupport.edges,
+        'TB'
+      );
+
+      assert.strictEqual(formatted.length, sampleTrees.techSupport.nodes.length);
+      for (const node of formatted) {
+        assert.ok(!Number.isNaN(node.x), `node ${node.id} x should be a valid number`);
+        assert.ok(!Number.isNaN(node.y), `node ${node.id} y should be a valid number`);
+      }
+
+      // Root node should have the lowest Y coordinate
+      const root = formatted.find(n => n.id === 'node_root')!;
+      const children = formatted.filter(n => n.id !== 'node_root');
+      for (const c of children) {
+        assert.ok(c.y > root.y, `Child node ${c.id} Y (${c.y}) should be below root Y (${root.y})`);
+      }
+    });
+
+    it('should format LR (Left-to-Right) hierarchy correctly', () => {
+      const formatted = formatTreeLayout(
+        sampleTrees.databaseSelector.nodes,
+        sampleTrees.databaseSelector.edges,
+        'LR'
+      );
+
+      assert.strictEqual(formatted.length, sampleTrees.databaseSelector.nodes.length);
+      const root = formatted.find(n => n.id === 'db_root')!;
+      const outcomes = formatted.filter(n => n.type === 'outcome');
+      for (const out of outcomes) {
+        assert.ok(out.x > root.x, `Outcome node ${out.id} X (${out.x}) should be to the right of root X (${root.x})`);
+      }
+    });
+
+    it('should format RL (Right-to-Left) hierarchy correctly', () => {
+      const formatted = formatTreeLayout(
+        sampleTrees.databaseSelector.nodes,
+        sampleTrees.databaseSelector.edges,
+        'RL'
+      );
+
+      assert.strictEqual(formatted.length, sampleTrees.databaseSelector.nodes.length);
+      const root = formatted.find(n => n.id === 'db_root')!;
+      const outcomes = formatted.filter(n => n.type === 'outcome');
+      for (const out of outcomes) {
+        assert.ok(out.x < root.x, `Outcome node ${out.id} X (${out.x}) should be to the left of root X (${root.x}) in RL`);
+      }
+    });
+
+    it('should handle empty nodes array gracefully', () => {
+      const formatted = formatTreeLayout([], [], 'TB');
+      assert.deepStrictEqual(formatted, []);
+    });
+  });
+
+  describe('Edge Bezier Path Calculation (calculateEdgePath)', () => {
+    const src: TreeNode = { id: 's', question: 'Source', x: 100, y: 100, width: 200, height: 100 };
+    const tgt: TreeNode = { id: 't', question: 'Target', x: 100, y: 300, width: 200, height: 100 };
+
+    it('should calculate valid TB cubic bezier path and center label position', () => {
+      const result = calculateEdgePath(src, tgt, 'TB');
+      assert.ok(result.path.startsWith('M 200 200 C'));
+      assert.ok(result.labelX > 0);
+      assert.ok(result.labelY > 0);
+      assert.ok(!Number.isNaN(result.angle));
+    });
+
+    it('should calculate valid LR cubic bezier path', () => {
+      const tgtRight: TreeNode = { id: 't2', question: 'Target Right', x: 400, y: 100, width: 200, height: 100 };
+      const result = calculateEdgePath(src, tgtRight, 'LR');
+      assert.ok(result.path.startsWith('M 300 150 C'));
+      assert.ok(result.labelX > 300 && result.labelX < 400);
+    });
+
+    it('should calculate valid RL cubic bezier path', () => {
+      const tgtLeft: TreeNode = { id: 't3', question: 'Target Left', x: -200, y: 100, width: 200, height: 100 };
+      const result = calculateEdgePath(src, tgtLeft, 'RL');
+      assert.ok(result.path.startsWith('M 100 150 C'));
+      assert.ok(result.labelX < 100 && result.labelX > 0);
+    });
+  });
+
+  describe('Hidden Node IDs on Collapsed Subtrees (getHiddenNodeIds)', () => {
+    it('should return empty set when no nodes are collapsed', () => {
+      const hidden = getHiddenNodeIds(sampleTrees.techSupport.nodes, sampleTrees.techSupport.edges);
+      assert.strictEqual(hidden.size, 0);
+    });
+
+    it('should hide all descendants when intermediate node is collapsed', () => {
+      const nodesWithCollapsed = sampleTrees.techSupport.nodes.map(n =>
+        n.id === 'node_screen_check' ? { ...n, isCollapsed: true } : n
+      );
+      const hidden = getHiddenNodeIds(nodesWithCollapsed, sampleTrees.techSupport.edges);
+      // node_screen_check has 4 descendants: boot_loop, monitor_cables, happy_login, safe_mode
+      assert.strictEqual(hidden.size, 4);
+      assert.ok(hidden.has('node_boot_loop'));
+      assert.ok(hidden.has('node_monitor_cables'));
+      assert.ok(hidden.has('node_happy_login'));
+      assert.ok(hidden.has('node_safe_mode'));
+      // The collapsed node itself is NOT in hidden set
+      assert.ok(!hidden.has('node_screen_check'));
+    });
+  });
 });
+

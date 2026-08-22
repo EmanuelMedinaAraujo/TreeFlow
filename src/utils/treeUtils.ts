@@ -286,7 +286,7 @@ function generateOutlineText(tree: TreeData): string {
 
     const role = getEffectiveNodeRole(node, tree.edges);
     const roleTag = role === 'outcome' ? '[OUTCOME]' : role === 'decision' ? '[DECISION]' : role === 'root' ? '[ROOT]' : '[QUESTION]';
-    const answerPrefix = answerFromParent ? `[Answer: "${answerFromParent}"] ──► ` : '';
+    const answerPrefix = answerFromParent ? `[Answer: "${answerFromParent.replace(/"/g, '\\"')}"] ──► ` : '';
     const currentLine = `${prefix}${isLastChild ? '└── ' : '├── '}${answerPrefix}${roleTag} ${node.question}`;
     lines.push(currentLine);
 
@@ -373,7 +373,7 @@ function generateMermaidText(tree: TreeData): string {
 
   // Define nodes
   tree.nodes.forEach(node => {
-    const cleanText = (node.question || 'Node').replace(/["\n\r]/g, ' ');
+    const cleanText = (node.question || 'Node').replace(/\n|\r/g, ' ').replace(/"/g, '#quot;');
     const safeId = node.id.replace(/[^a-zA-Z0-9_]/g, '_');
     const role = getEffectiveNodeRole(node, tree.edges);
     if (role === 'outcome') {
@@ -389,7 +389,7 @@ function generateMermaidText(tree: TreeData): string {
   tree.edges.forEach(edge => {
     const sourceSafe = edge.sourceNodeId.replace(/[^a-zA-Z0-9_]/g, '_');
     const targetSafe = edge.targetNodeId.replace(/[^a-zA-Z0-9_]/g, '_');
-    const cleanAnswer = (edge.answer || 'Next').replace(/["\n\r]/g, ' ');
+    const cleanAnswer = (edge.answer || 'Next').replace(/\n|\r/g, ' ').replace(/"/g, '#quot;');
     lines.push(`  ${sourceSafe} -->|"${cleanAnswer}"| ${targetSafe}`);
   });
 
@@ -413,9 +413,11 @@ function generateDecisionPathsText(tree: TreeData): string {
       // Leaf node reached
       const pathString = currentPath
         .map((step, i) => {
-          if (i === 0) return `[Start: "${step.q}"]`;
+          const qEsc = (step.q || '').replace(/"/g, '\\"');
+          const aEsc = (step.a || '').replace(/"/g, '\\"');
+          if (i === 0) return `[Start: "${qEsc}"]`;
           const roleLabel = step.role === 'outcome' ? 'Outcome' : step.role === 'decision' ? 'Decision' : 'Step';
-          return `──► (Answer: "${step.a}") ──► [${roleLabel}: "${step.q}"]`;
+          return `──► (Answer: "${aEsc}") ──► [${roleLabel}: "${qEsc}"]`;
         })
         .join(' ');
       paths.push(pathString);
@@ -765,7 +767,7 @@ function parseOutlineImport(content: string): { success: boolean; tree?: TreeDat
 
       if (branchMatch) {
         const prefix = branchMatch[1] || '';
-        const answer = branchMatch[2] || 'Next';
+        const answer = (branchMatch[2] || 'Next').replace(/\\"/g, '"');
         const roleTag = branchMatch[3] || 'QUESTION';
         const question = (branchMatch[4] || '').trim();
 
@@ -1159,7 +1161,7 @@ function parseMermaidImport(content: string): { success: boolean; tree?: TreeDat
           nodeType = 'decision';
           nodeColor = '#f59e0b';
         }
-        text = text.replace(/^(?:🎯|❓|🏁|⚖️)\s*/, '').trim();
+        text = text.replace(/^(?:🎯|❓|🏁|⚖️)\s*/, '').replace(/#quot;|&quot;/g, '"').trim();
 
         if (!nodeMap.has(id)) {
           nodeMap.set(id, {
@@ -1180,7 +1182,8 @@ function parseMermaidImport(content: string): { success: boolean; tree?: TreeDat
       const edgeMatch = line.match(/^([a-zA-Z0-9_]+)\s*-->\s*(?:\|"([^"]+)"\|\s*|\|([^|]+)\|\s*)?([a-zA-Z0-9_]+)/);
       if (edgeMatch) {
         const sourceId = edgeMatch[1];
-        const answer = (edgeMatch[2] || edgeMatch[3] || 'Next').trim();
+        const rawAnswer = edgeMatch[2] || edgeMatch[3] || 'Next';
+        const answer = rawAnswer.replace(/#quot;|&quot;/g, '"').trim();
         const targetId = edgeMatch[4];
 
         // Ensure nodes exist
