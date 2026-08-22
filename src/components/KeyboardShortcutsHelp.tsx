@@ -35,20 +35,24 @@ export const KeyboardShortcutsHelp: React.FC<KeyboardShortcutsHelpProps> = ({ is
           <div>
             <div className="flex items-center gap-1.5 font-bold text-slate-900 uppercase tracking-wider text-[10px] mb-1.5">
               <MousePointer className="w-3.5 h-3.5 text-blue-500" />
-              <span>Canvas Mouse Interactions</span>
+              <span>Canvas Touchpad & Mouse Interactions</span>
             </div>
             <div className="space-y-1.5 bg-slate-50 p-2.5 rounded border border-slate-200">
               <div className="flex justify-between items-center">
-                <span>Add Node on Plane</span>
-                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Right-Click</span>
+                <span>Pan Canvas</span>
+                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Touchpad Drag / 2-Finger Swipe</span>
               </div>
               <div className="flex justify-between items-center">
-                <span>Pan Canvas</span>
-                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Drag Canvas / Space+Drag</span>
+                <span>Multi-Select Box</span>
+                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Shift + Drag</span>
               </div>
               <div className="flex justify-between items-center">
                 <span>Zoom In / Out</span>
-                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Wheel / Pinch</span>
+                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Pinch / Ctrl + Wheel</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span>Add Node on Plane</span>
+                <span className="font-semibold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px]">Right-Click</span>
               </div>
               <div className="flex justify-between items-center">
                 <span>Connect Nodes</span>

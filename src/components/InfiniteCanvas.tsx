@@ -71,6 +71,8 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
 
   // Canvas Panning state
   const isPanningRef = useRef(false);
+  const [isPanning, setIsPanning] = useState(false);
+  const panMovedRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, transformX: 0, transformY: 0 });
 
   // Marquee Selection Box state
@@ -91,8 +93,9 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   const connectionDraftRef = useRef<ConnectionDraft | null>(null);
   connectionDraftRef.current = connectionDraft;
 
-  // Space key for panning
+  // Space & Shift keys for panning / marquee
   const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const [isShiftPressed, setIsShiftPressed] = useState(false);
 
   // Convert Screen (clientX, clientY) -> Canvas World Coordinates
   const screenToWorld = useCallback(
@@ -109,7 +112,7 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     [transform]
   );
 
-  // Perfect Centered Mouse Wheel Zooming
+  // Perfect Centered Mouse Wheel Zooming & Smooth 2-finger Touchpad Panning
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       e.preventDefault();
@@ -123,8 +126,8 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
       const worldX = (mouseX - transform.x) / transform.zoom;
       const worldY = (mouseY - transform.y) / transform.zoom;
 
-      if (e.ctrlKey) {
-        // Pinch-to-zoom on trackpad
+      if (e.ctrlKey || e.metaKey) {
+        // Pinch-to-zoom on trackpad or Ctrl+Wheel zoom
         const zoomDelta = -e.deltaY * 0.015;
         const newZoom = Math.min(Math.max(transform.zoom * (1 + zoomDelta), 0.15), 3.5);
         onTransformChange({
@@ -139,13 +142,11 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
           x: transform.x - e.deltaY,
         });
       } else {
-        // Standard Mouse Wheel Zoom
-        const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
-        const newZoom = Math.min(Math.max(transform.zoom * zoomFactor, 0.15), 3.5);
+        // Smooth Touchpad 2-finger pan or Wheel pan
         onTransformChange({
-          zoom: newZoom,
-          x: mouseX - worldX * newZoom,
-          y: mouseY - worldY * newZoom,
+          ...transform,
+          x: transform.x - e.deltaX,
+          y: transform.y - e.deltaY,
         });
       }
     },
@@ -162,17 +163,24 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     };
   }, [handleWheel]);
 
-  // Handle Space key toggle
+  // Handle Space and Shift key toggles
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.code === 'Space') {
         e.preventDefault();
         setIsSpacePressed(true);
+      }
+      if (e.key === 'Shift') {
+        setIsShiftPressed(true);
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         setIsSpacePressed(false);
+      }
+      if (e.key === 'Shift') {
+        setIsShiftPressed(false);
       }
     };
 
@@ -191,6 +199,9 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
       if (isPanningRef.current) {
         const dx = e.clientX - panStartRef.current.x;
         const dy = e.clientY - panStartRef.current.y;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+          panMovedRef.current = true;
+        }
         onTransformChange({
           ...transform,
           x: panStartRef.current.transformX + dx,
@@ -267,6 +278,10 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
       // End Canvas Pan
       if (isPanningRef.current) {
         isPanningRef.current = false;
+        setIsPanning(false);
+        if (!panMovedRef.current) {
+          onClearSelection();
+        }
       }
 
       // End Node Drag and commit final position to Undo history
@@ -338,6 +353,7 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     onSelectMultipleNodes,
     onCompleteConnection, 
     onCreateConnectedChild, 
+    onClearSelection,
     screenToWorld
   ]);
 
@@ -345,20 +361,8 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) return; // Right click handled by context menu
 
-    // Middle mouse button or Space + Click -> Pan Canvas
-    if (e.button === 1 || isSpacePressed) {
-      isPanningRef.current = true;
-      panStartRef.current = {
-        x: e.clientX,
-        y: e.clientY,
-        transformX: transform.x,
-        transformY: transform.y,
-      };
-      return;
-    }
-
-    // Left click on empty canvas -> start Marquee Box Selection
-    if (e.button === 0) {
+    // Shift + Left Click on empty canvas -> start Marquee Box Selection
+    if (e.button === 0 && e.shiftKey) {
       const worldPos = screenToWorld(e.clientX, e.clientY);
       isMarqueeSelectingRef.current = true;
       marqueeStartRef.current = {
@@ -368,9 +372,23 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
         startWorldY: worldPos.y,
       };
 
-      if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (!e.ctrlKey && !e.metaKey) {
         onClearSelection();
       }
+      return;
+    }
+
+    // Default Left click, Middle click, or Space + Click on empty canvas -> Pan Canvas
+    if (e.button === 0 || e.button === 1 || isSpacePressed) {
+      isPanningRef.current = true;
+      setIsPanning(true);
+      panMovedRef.current = false;
+      panStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        transformX: transform.x,
+        transformY: transform.y,
+      };
     }
   };
 
@@ -452,13 +470,19 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     e => !hiddenNodeIds.has(e.sourceNodeId) && !hiddenNodeIds.has(e.targetNodeId)
   );
 
+  const cursorClass = isPanning
+    ? 'cursor-grabbing'
+    : isShiftPressed
+    ? 'cursor-crosshair'
+    : isSpacePressed
+    ? 'cursor-grab active:cursor-grabbing'
+    : 'cursor-grab active:cursor-grabbing';
+
   return (
     <div
       ref={containerRef}
       id="infinite-canvas-viewport"
-      className={`relative w-full h-full overflow-hidden bg-slate-100 select-none ${
-        isSpacePressed ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
-      }`}
+      className={`relative w-full h-full overflow-hidden bg-slate-100 select-none ${cursorClass}`}
       onMouseDown={handleCanvasMouseDown}
       onContextMenu={handleCanvasContextMenu}
     >
