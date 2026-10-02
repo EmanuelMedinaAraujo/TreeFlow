@@ -1,10 +1,9 @@
 'use strict';
 
 // Bump this when you change any file so installed apps pick up the new version.
-const CACHE = 'gluecksrad-v1';
+const CACHE = 'gluecksrad-v2';
 const ASSETS = [
   './',
-  './index.html',
   './style.css',
   './app.js',
   './manifest.webmanifest',
@@ -39,12 +38,17 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    const cached = await cache.match(req, { ignoreSearch: true })
-      || (req.mode === 'navigate' ? await cache.match('./index.html') : undefined);
+    // One cache entry per file: every page load maps to the start page and query strings are
+    // dropped, so a link like "/?utm=x" can never pin an outdated copy.
+    const url = new URL(req.url);
+    url.search = '';
+    url.hash = '';
+    const key = req.mode === 'navigate' ? self.registration.scope : url.href;
+    const cached = await cache.match(key);
 
-    const refresh = fetch(req)
+    const refresh = fetch(req.mode === 'navigate' ? key : req)
       .then((res) => {
-        if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
+        if (res && res.ok && res.type === 'basic' && !res.redirected) cache.put(key, res.clone());
         return res;
       })
       .catch(() => undefined);

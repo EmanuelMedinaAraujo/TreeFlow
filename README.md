@@ -49,7 +49,11 @@ Then install it:
 - **iPhone (Safari)**: open the URL → Share button → *Zum Home-Bildschirm*.
 - **Android (Chrome)**: open the URL → menu → *App installieren*.
 
-Open it once while online; from then on it works in airplane mode.
+Open the installed app once while online; from then on it works in airplane mode.
+
+On iPhone, the home-screen app has its own storage, separate from Safari, so set up your wheels
+inside the installed app, not in a Safari tab. Installed apps are also exempt from Safari's habit of
+wiping data from sites that haven't been visited for a week.
 
 ## Updating
 

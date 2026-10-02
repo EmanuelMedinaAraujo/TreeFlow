@@ -312,6 +312,8 @@ button:disabled {
 
 .result {
   margin: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   min-height: 1.6em;
   text-align: center;
   font-size: 1.15rem;

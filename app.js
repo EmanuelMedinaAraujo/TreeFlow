@@ -93,7 +93,7 @@
     };
     const history = Array.isArray(raw.history)
       ? raw.history
-          .filter((h) => h && typeof h.label === 'string' && Number.isFinite(h.t))
+          .filter((h) => h && typeof h.label === 'string' && Number.isFinite(h.t) && Math.abs(h.t) < 8.64e15)
           .slice(0, MAX_HISTORY)
           .map((h) => ({ t: h.t, label: h.label, wheel: String(h.wheel ?? ''), color: String(h.color ?? '') }))
       : [];
@@ -295,19 +295,15 @@
     ctx.textBaseline = 'middle';
     const outer = R * 0.9;
     const maxWidth = outer - R * 0.25;
+    const minFont = 11 * dpr;
+    // Vertical room of a slice around the middle of the label.
+    const room = n > 1 ? 2 * R * 0.55 * Math.sin(Math.min(seg / 2, Math.PI / 2)) : R;
     for (let k = 0; k < n; k++) {
       const i = idx[k];
       ctx.save();
       ctx.rotate(-Math.PI / 2 + (k + 0.5) * seg);
       ctx.fillStyle = textColorFor(colorFor(i, wheel.items.length));
-      const label = labelOf(wheel, i);
-      // Shrink long labels a bit before falling back to an ellipsis.
-      const width = ctx.measureText(label).width;
-      if (width > maxWidth) {
-        ctx.font = `700 ${Math.max(fontSize * 0.68, (fontSize * maxWidth) / width)}px ${FONT}`;
-      }
-      ctx.fillText(fitText(label, maxWidth), outer, 0);
-      ctx.font = `700 ${fontSize}px ${FONT}`;
+      drawLabel(labelOf(wheel, i), fontSize, minFont, outer, maxWidth, room);
       ctx.restore();
     }
 
@@ -322,6 +318,53 @@
     }
 
     ctx.restore();
+  }
+
+  function setFont(px) {
+    ctx.font = `700 ${px}px ${FONT}`;
+  }
+
+  // Split at the space that gives the most balanced two lines.
+  function splitInTwo(text) {
+    let best = null;
+    for (let j = 0; j < text.length; j++) {
+      if (text[j] !== ' ') continue;
+      const a = text.slice(0, j).trim();
+      const b = text.slice(j + 1).trim();
+      if (!a || !b) continue;
+      const w = Math.max(ctx.measureText(a).width, ctx.measureText(b).width);
+      if (!best || w < best.w) best = { a, b, w };
+    }
+    return best;
+  }
+
+  // Draws a label right-aligned at `outer`, shrinking it and, if there is room, wrapping it
+  // onto two lines before falling back to an ellipsis.
+  function drawLabel(text, fontSize, minFont, outer, maxWidth, room) {
+    setFont(fontSize);
+    const width = ctx.measureText(text).width;
+    if (width <= maxWidth) {
+      ctx.fillText(text, outer, 0);
+      return;
+    }
+    const single = Math.max(minFont, (fontSize * maxWidth) / width);
+    if (single >= fontSize * 0.75) {
+      setFont(single);
+      ctx.fillText(fitText(text, maxWidth), outer, 0);
+      return;
+    }
+    const lines = splitInTwo(text);
+    if (lines) {
+      const two = Math.max(minFont, Math.min(fontSize, (fontSize * maxWidth) / lines.w, room / 2.3));
+      if (two >= single) {
+        setFont(two);
+        ctx.fillText(fitText(lines.a, maxWidth), outer, -two * 0.55);
+        ctx.fillText(fitText(lines.b, maxWidth), outer, two * 0.55);
+        return;
+      }
+    }
+    setFont(single);
+    ctx.fillText(fitText(text, maxWidth), outer, 0);
   }
 
   // Index (into the visible slices) that sits under the pointer at 12 o'clock.
@@ -342,7 +385,7 @@
         if (!AC) return;
         audioCtx = new AC();
       }
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      if (audioCtx.state !== 'running') audioCtx.resume();
     } catch {
       audioCtx = null;
     }
@@ -493,9 +536,12 @@
     winnerNote.textContent = '';
     if (pendingElimination) {
       const remaining = visibleIndices(wheel).length - 1;
-      winnerNote.textContent = remaining > 0
+      const rest = visibleIndices(wheel).filter((x) => x !== i);
+      winnerNote.textContent = remaining > 1
         ? `Wird für die nächsten Runden entfernt (${remaining} übrig).`
-        : 'Alle waren einmal dran – das Rad startet neu.';
+        : remaining === 1
+          ? `Als Letztes übrig: ${labelOf(wheel, rest[0])}.`
+          : 'Alle waren einmal dran – das Rad startet neu.';
     }
 
     state.history.unshift({ t: Date.now(), label, wheel: wheel.name, color });
@@ -505,18 +551,29 @@
 
     resultEl.replaceChildren('Ergebnis: ', Object.assign(document.createElement('strong'), { textContent: label }));
     overlay.hidden = false;
+    setBackgroundInert(true);
     okBtn.focus();
     winFeedback();
     confetti([color, ...PALETTE]);
   }
 
+  function setBackgroundInert(on) {
+    for (const el of document.querySelectorAll('.topbar, .main')) {
+      el.inert = on;
+      if (on) el.setAttribute('aria-hidden', 'true');
+      else el.removeAttribute('aria-hidden');
+    }
+  }
+
   function closeWinner() {
     if (overlay.hidden) return;
     overlay.hidden = true;
+    setBackgroundInert(false);
     if (pendingElimination) {
       const wheel = state.wheels.find((w) => w.id === pendingElimination.wheelId);
-      if (wheel && !wheel.eliminated.includes(pendingElimination.index)) {
-        wheel.eliminated.push(pendingElimination.index);
+      const i = pendingElimination.index;
+      if (wheel && i < wheel.items.length && !wheel.eliminated.includes(i)) {
+        wheel.eliminated.push(i);
         if (wheel.eliminated.length >= wheel.items.length) wheel.eliminated = [];
         save();
       }
@@ -655,9 +712,18 @@
 
   function setCount(n) {
     const wheel = activeWheel();
-    const target = Math.max(MIN_ITEMS, Math.min(MAX_ITEMS, Math.round(n) || MIN_ITEMS));
+    if (!Number.isFinite(n)) {
+      countInput.value = String(wheel.items.length);
+      return;
+    }
+    const target = Math.max(MIN_ITEMS, Math.min(MAX_ITEMS, Math.round(n)));
     if (target === wheel.items.length) {
       countInput.value = String(target);
+      return;
+    }
+    const dropped = wheel.items.slice(target).filter((x) => x.trim()).length;
+    if (dropped > 1 && !confirm(`${dropped} ausgefüllte Möglichkeiten werden entfernt. Fortfahren?`)) {
+      countInput.value = String(wheel.items.length);
       return;
     }
     while (wheel.items.length < target) wheel.items.push('');
@@ -666,7 +732,7 @@
   }
 
   function openEditor() {
-    if (spinning) return;
+    if (spinning || !overlay.hidden || editor.open) return;
     renderEditor();
     editor.showModal();
   }
@@ -722,6 +788,9 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         closeWinner();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        (document.activeElement === okBtn ? againBtn : okBtn).focus();
       }
       return;
     }
@@ -792,6 +861,8 @@
       } else {
         t.blur();
       }
+    } else if (t.tagName !== 'BUTTON') {
+      e.preventDefault();
     }
   });
 
@@ -838,14 +909,15 @@
   });
   dupWheel.addEventListener('click', () => {
     const w = activeWheel();
-    addWheel({ id: uid(), name: `${w.name} (Kopie)`.slice(0, MAX_LABEL), items: [...w.items], eliminated: [] });
+    addWheel({ id: uid(), name: `${w.name.slice(0, MAX_LABEL - 8)} (Kopie)`, items: [...w.items], eliminated: [] });
   });
   delWheel.addEventListener('click', () => {
     if (state.wheels.length <= 1) return;
     const w = activeWheel();
     if (!confirm(`„${w.name}“ wirklich löschen?`)) return;
+    const pos = state.wheels.indexOf(w);
     state.wheels = state.wheels.filter((x) => x.id !== w.id);
-    state.activeId = state.wheels[0].id;
+    state.activeId = state.wheels[Math.min(pos, state.wheels.length - 1)].id;
     rotation = 0;
     save();
     renderMain();
