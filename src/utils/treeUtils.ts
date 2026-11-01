@@ -265,6 +265,20 @@ export function getEffectiveNodeRole(node: TreeNode, edges: TreeEdge[]): string 
 }
 
 /**
+ * Escape text for a double-quoted export field
+ */
+function escapeQuoted(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Reverse escapeQuoted, leaving any other backslash as written
+ */
+function unescapeQuoted(text: string): string {
+  return text.replace(/\\(["\\])/g, '$1');
+}
+
+/**
  * Generate human-readable hierarchical outline
  */
 function generateOutlineText(tree: TreeData): string {
@@ -286,7 +300,7 @@ function generateOutlineText(tree: TreeData): string {
 
     const role = getEffectiveNodeRole(node, tree.edges);
     const roleTag = role === 'outcome' ? '[OUTCOME]' : role === 'decision' ? '[DECISION]' : role === 'root' ? '[ROOT]' : '[QUESTION]';
-    const answerPrefix = answerFromParent ? `[Answer: "${answerFromParent.replace(/"/g, '\\"')}"] ──► ` : '';
+    const answerPrefix = answerFromParent ? `[Answer: "${escapeQuoted(answerFromParent)}"] ──► ` : '';
     const currentLine = `${prefix}${isLastChild ? '└── ' : '├── '}${answerPrefix}${roleTag} ${node.question}`;
     lines.push(currentLine);
 
@@ -413,8 +427,8 @@ function generateDecisionPathsText(tree: TreeData): string {
       // Leaf node reached
       const pathString = currentPath
         .map((step, i) => {
-          const qEsc = (step.q || '').replace(/"/g, '\\"');
-          const aEsc = (step.a || '').replace(/"/g, '\\"');
+          const qEsc = escapeQuoted(step.q || '');
+          const aEsc = escapeQuoted(step.a || '');
           if (i === 0) return `[Start: "${qEsc}"]`;
           const roleLabel = step.role === 'outcome' ? 'Outcome' : step.role === 'decision' ? 'Decision' : 'Step';
           return `──► (Answer: "${aEsc}") ──► [${roleLabel}: "${qEsc}"]`;
@@ -458,17 +472,17 @@ function generateYamlText(tree: TreeData): string {
 
     const role = getEffectiveNodeRole(node, tree.edges);
     const indent = '  '.repeat(indentLevel);
-    let output = `${indent}- question: "${(node.question || '').replace(/"/g, '\\"')}"\n`;
+    let output = `${indent}- question: "${escapeQuoted(node.question || '')}"\n`;
     output += `${indent}  role: "${role}"\n`;
     if (node.description) {
-      output += `${indent}  description: "${node.description.replace(/"/g, '\\"')}"\n`;
+      output += `${indent}  description: "${escapeQuoted(node.description)}"\n`;
     }
 
     const childEdges = getChildEdges(nodeId, tree.edges);
     if (childEdges.length > 0) {
       output += `${indent}  branches:\n`;
       for (const edge of childEdges) {
-        output += `${indent}    - answer: "${(edge.answer || '').replace(/"/g, '\\"')}"\n`;
+        output += `${indent}    - answer: "${escapeQuoted(edge.answer || '')}"\n`;
         output += `${indent}      target:\n`;
         output += nodeToYaml(edge.targetNodeId, indentLevel + 4);
       }
@@ -767,7 +781,7 @@ function parseOutlineImport(content: string): { success: boolean; tree?: TreeDat
 
       if (branchMatch) {
         const prefix = branchMatch[1] || '';
-        const answer = (branchMatch[2] || 'Next').replace(/\\"/g, '"');
+        const answer = unescapeQuoted(branchMatch[2] || 'Next');
         const roleTag = branchMatch[3] || 'QUESTION';
         const question = (branchMatch[4] || '').trim();
 
@@ -1023,7 +1037,7 @@ function parseYamlImport(content: string): { success: boolean; tree?: TreeData; 
       // Question line: "- question: \"...\"" or "question: \"...\""
       const questionMatch = trimmed.match(/^(?:-\s*)?question:\s*"(.*)"\s*$/);
       if (questionMatch) {
-        const question = questionMatch[1].replace(/\\"/g, '"');
+        const question = unescapeQuoted(questionMatch[1]);
         const isRoot = stack.length === 0;
 
         const newNode: TreeNode = {
@@ -1079,14 +1093,14 @@ function parseYamlImport(content: string): { success: boolean; tree?: TreeData; 
       // Description line
       const descMatch = trimmed.match(/^description:\s*"(.*)"\s*$/);
       if (descMatch && lastCreatedNode) {
-        lastCreatedNode.description = descMatch[1].replace(/\\"/g, '"');
+        lastCreatedNode.description = unescapeQuoted(descMatch[1]);
         continue;
       }
 
       // Branch answer line: "- answer: \"...\""
       const answerMatch = trimmed.match(/^(?:-\s*)?answer:\s*"(.*)"\s*$/);
       if (answerMatch) {
-        pendingAnswer = answerMatch[1].replace(/\\"/g, '"');
+        pendingAnswer = unescapeQuoted(answerMatch[1]);
         // While stack indent is deeper than this branch level, pop
         while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
           stack.pop();
@@ -1280,7 +1294,7 @@ function parseDecisionPathsImport(content: string): { success: boolean; tree?: T
         // Check for (Answer: "...")
         const answerMatch = seg.match(/^\(Answer:\s*"(.*)"\)$/);
         if (answerMatch) {
-          pendingAnswer = answerMatch[1].replace(/\\"/g, '"');
+          pendingAnswer = unescapeQuoted(answerMatch[1]);
           continue;
         }
 
@@ -1288,7 +1302,7 @@ function parseDecisionPathsImport(content: string): { success: boolean; tree?: T
         const nodeMatch = seg.match(/^\[(Start|Step|Outcome|Question|Decision):\s*"(.*)"\]$/);
         if (nodeMatch) {
           const role = nodeMatch[1].toLowerCase();
-          const question = nodeMatch[2].replace(/\\"/g, '"');
+          const question = unescapeQuoted(nodeMatch[2]);
 
           let nodeId = nodeTextToId.get(question);
           if (!nodeId) {

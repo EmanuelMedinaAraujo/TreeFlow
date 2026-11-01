@@ -2,8 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { sampleTrees } from './sampleTrees';
 import { 
-  exportTreeText, 
-  validateAndParseImport, 
+  EXPORT_SIGNATURE_HEADER,
+  exportTreeText,
+  validateAndParseImport,
   getNodeRole, 
   getTreeMetrics,
   findRootNodes,
@@ -208,6 +209,41 @@ describe('Export and Import Graph Equivalence', () => {
         verifyGraphEquivalence(specialTree, result.tree, `specialTree -> ${format}`);
       });
     }
+
+    const backslashTree: TreeData = {
+      id: 'backslash_tree',
+      name: 'Backslash Tree',
+      growthDirection: 'TB',
+      nodes: [
+        { id: 'b0', question: 'Is the path C:\\temp\\?', description: 'Ends in a backslash\\', x: 0, y: 0, isRoot: true, type: 'question' },
+        { id: 'b1', question: 'Literal \\" and \\\\ stay intact\\', description: 'Regex \\d+ "quoted"', x: 0, y: 0, type: 'outcome' },
+      ],
+      edges: [
+        { id: 'be1', sourceNodeId: 'b0', targetNodeId: 'b1', answer: 'Yes "C:\\"] and more\\' },
+      ],
+    };
+
+    for (const format of ['outline', 'yaml', 'paths'] as const) {
+      it(`should preserve backslashes in ${format}`, () => {
+        const exported = exportTreeText(backslashTree, format);
+        const result = validateAndParseImport(exported);
+        assert.strictEqual(result.success, true, `Failed to parse ${format}: ${result.error}`);
+        assert.ok(result.tree);
+        verifyGraphEquivalence(backslashTree, result.tree, `backslashTree -> ${format}`);
+      });
+    }
+
+    it('should escape backslashes before quotes in yaml', () => {
+      const exported = exportTreeText(backslashTree, 'yaml');
+      assert.ok(exported.includes('answer: "Yes \\"C:\\\\\\"] and more\\\\"'));
+    });
+
+    it('should keep unescaped backslashes from older exports', () => {
+      const oldExport = `# ${EXPORT_SIGNATURE_HEADER}\nname: "Old"\ngrowthDirection: "TB"\ntrees:\n  - question: "C:\\temp"\n    role: "root"\n`;
+      const result = validateAndParseImport(oldExport);
+      assert.strictEqual(result.success, true, `Failed to parse: ${result.error}`);
+      assert.strictEqual(result.tree?.nodes[0].question, 'C:\\temp');
+    });
   });
 
   describe('Dynamic Node Roles and Tree Metrics Calculation', () => {
